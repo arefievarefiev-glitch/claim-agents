@@ -1,0 +1,115 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ClaimForge-UA Procedural Document Content Schema",
+  "type": "object",
+  "required": ["header", "title", "body"],
+  "properties": {
+    "header": {
+      "type": "array",
+      "minItems": 2,
+      "items": {
+        "type": "object",
+        "required": ["role", "lines"],
+        "properties": {
+          "role": { "type": "string", "minLength": 2 },
+          "lines": {
+            "type": "array",
+            "minItems": 1,
+            "items": { "type": "string" }
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "title": { "type": "string", "minLength": 3 },
+    "subject": {
+      "oneOf": [
+        { "type": "string" },
+        { "type": "array", "items": { "type": "string" } }
+      ]
+    },
+    "flat": { "type": "boolean", "default": false },
+    "body": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["type"],
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "section",
+              "subsection",
+              "heading",
+              "para",
+              "plain",
+              "quote",
+              "table",
+              "toc",
+              "claims",
+              "annexes"
+            ]
+          },
+          "text": { "type": "string" },
+          "id": { "type": "string" },
+          "keepNext": { "type": "boolean" },
+          "runs": {
+            "oneOf": [
+              { "type": "string" },
+              {
+                "type": "array",
+                "items": {
+                  "oneOf": [
+                    { "type": "string" },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "text": { "type": "string" },
+                        "bold": { "type": "boolean" },
+                        "url": { "type": "string" },
+                        "ref": { "type": "string" },
+                        "cached": { "type": "string" }
+                      },
+                      "additionalProperties": false
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          "caption": { "type": "string" },
+          "columns": {
+            "type": "array",
+            "items": { "type": "string" }
+          },
+          "widths": {
+            "type": "array",
+            "items": { "type": "integer" }
+          },
+          "rows": {
+            "type": "array",
+            "items": {
+              "type": "array",
+              "items": { "type": "string" }
+            }
+          },
+          "intro": { "type": "string" },
+          "items": {
+            "type": "array",
+            "items": {
+              "oneOf": [
+                { "type": "string" },
+                { "type": "array" }
+              ]
+            }
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "date": { "type": "string" },
+    "signature": { "type": "string" }
+  },
+  "additionalProperties": false
+}

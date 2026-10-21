@@ -1,0 +1,19 @@
+# Роль → виконавець. Зміна автора чи рецензента — правка цього файлу, а не коду.
+# argon_backend: agy — Antigravity CLI з входом Google AI Pro; api — платний ключ Gemini API.
+
+argon_backend: agy          # уточнюється після перевірки Ф0
+argon_fallback: none        # api — якщо квоту agy вичерпано і ключ є
+
+roles:
+  extract:    {model: argon, thinking: medium}   # S2 реєстр фактів
+  strategy:   {model: argon, thinking: high}     # S3 карта позиції
+  practice:   {model: argon, thinking: medium}   # S4 добір практики
+  review:     {model: argon, thinking: high}     # S7 ворожа рецензія
+  intake:     {model: sonnet}                    # G1
+  research:   {model: sonnet}                    # S4 пошук у ЄДРСР
+  writer:     {model: opus}                      # S5 чернетка і ревізії
+  mediator:   {model: sonnet}                    # S7 зведення зауважень
+  fixer:      {model: sonnet}                    # S6 механічні правки
+
+limits:
+  review_rounds: 2
