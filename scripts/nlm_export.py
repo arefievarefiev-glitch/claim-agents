@@ -52,16 +52,30 @@ def list_sources(notebook_id: str) -> list[dict]:
     return result
 
 
+IMAGE_URL_RE = re.compile(r"https://lh3\.googleusercontent\.com/\S+")
+UUID_RE = re.compile(r"\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b")
+
+
 def quality(text: str) -> dict:
-    non_space = [c for c in text if not c.isspace()]
+    """Оцінює якість тексту джерела.
+
+    Скан без текстового шару NotebookLM віддає як перелік посилань на зображення сторінок
+    (lh3.googleusercontent.com) з ідентифікаторами. Ці посилання вимагають входу в Google,
+    тож такий текст для роботи непридатний: потрібен оригінал PDF (прапорець image_only).
+    """
+    pages = len(IMAGE_URL_RE.findall(text))
+    plain = UUID_RE.sub(" ", IMAGE_URL_RE.sub(" ", text))
+    non_space = [c for c in plain if not c.isspace()]
     letters = sum(1 for c in non_space if LETTER_RE.match(c))
     share = round(letters / len(non_space), 3) if non_space else 0.0
     flags = []
-    if len(text) < MIN_CHARS:
+    if pages and len(non_space) < MIN_CHARS:
+        flags.append("image_only")
+    elif len(non_space) < MIN_CHARS:
         flags.append("empty_or_no_ocr")
     elif share < MIN_LETTER_SHARE:
         flags.append("poor_ocr")
-    return {"chars": len(text), "letter_share": share, "flags": flags}
+    return {"chars": len(plain.strip()), "image_pages": pages, "letter_share": share, "flags": flags}
 
 
 def main() -> int:
