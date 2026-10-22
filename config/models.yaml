@@ -1,8 +1,8 @@
 # Роль → виконавець. Зміна автора чи рецензента — правка цього файлу, а не коду.
 # argon_backend: agy — Antigravity CLI з входом Google AI Pro; api — платний ключ Gemini API.
 
-argon_backend: agy          # уточнюється після перевірки Ф0
-argon_fallback: none        # api — якщо квоту agy вичерпано і ключ є
+argon_backend: agy          # підтверджено Ф0 22.10.2026: вхід Google AI Pro, без API-ключа
+argon_fallback: none        # api — лише якщо колись з'явиться платний ключ Gemini API
 
 roles:
   extract:    {model: argon, thinking: medium}   # S2 реєстр фактів
