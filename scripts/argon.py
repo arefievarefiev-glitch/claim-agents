@@ -13,6 +13,9 @@
   * --json-schema обов'язковий: без нього agy-агент схильний до «дослідження» робочої теки;
   * виклик іде в порожній тимчасовій теці, а преамбула забороняє інструменти;
     якщо модель усе ж викликала інструмент, це фіксується в підсумку (tools_used);
+  * скан без текстового шару передається через --attach: файл копіюється в робочу теку
+    під латинським іменем, модель читає його сама через read_file (тест: синтетичний
+    скан 2 с., 9 з 9 цитат дослівні);
   * повідомлення понад ~150 тис. символів agy виносить у файл, і модель читає його
     частинами з пропусками (тест: 2 з 3 фактів при 228 тис., 0 з 3 при 304 тис.).
     Тому досьє (--context) ділиться на частини до CHUNK_CHARS по межах абзаців і йде
@@ -51,6 +54,12 @@ PREAMBLE = (
 )
 EFFORTS = ("low", "medium", "high")
 CHUNK_CHARS = 120_000
+ATTACH_PREAMBLE = (
+    "This is a document-analysis task, not a coding task. The documents are files in the current workspace: {files}. "
+    "Read every one of them in full with the read_file tool (all pages). Do not run commands and do not use any other tool. "
+    "Then answer with the structured output that matches the provided JSON schema. "
+    "Write all natural-language fields in Ukrainian unless the task says otherwise.\n\n"
+)
 PART_NOTE = ("DOSSIER PART {i} of {n}. Read and retain it in full; the task comes in the last message. "
              "Reply only with the word OK.\n\n")
 AUTH_HINTS = ("sign in", "login", "log in", "authenticat", "unauthor", "credential")
@@ -84,7 +93,10 @@ def split_chunks(text: str, limit: int = CHUNK_CHARS) -> list[str]:
     return [c for c in chunks if c.strip()]
 
 
-def build_messages(task: str, context: str) -> list[str]:
+def build_messages(task: str, context: str, attachments: list[str] | None = None) -> list[str]:
+    if attachments:
+        # Скани читаються самою моделлю; текстове досьє в такому виклику не передається.
+        return [ATTACH_PREAMBLE.format(files=", ".join(attachments)) + task]
     if not context.strip():
         return [PREAMBLE + task]
     parts = split_chunks(context)
@@ -93,13 +105,19 @@ def build_messages(task: str, context: str) -> list[str]:
     return msgs
 
 
-def run(task: str, context: str, schema_path: Path, effort: str, agy: str, timeout: int | None) -> dict:
+def run(task: str, context: str, schema_path: Path, effort: str, agy: str, timeout: int | None,
+        attach: list[Path] | None = None) -> dict:
     model = f"gemini-4-argon-{effort}"
     cmd = [agy, "--model", model, "--input-format", "stream-json", "--output-format", "stream-json",
            "--disable-slash-commands", "--json-schema", str(schema_path.resolve())]
-    msgs = build_messages(task, context)
-    message = "".join(json.dumps({"event": "user", "message": {"content": m}}, ensure_ascii=True) + "\n" for m in msgs)
     work = tempfile.mkdtemp(prefix="argon_")
+    names = []
+    for i, src in enumerate(attach or [], 1):
+        name = f"doc{i}{src.suffix.lower()}"  # латинські імена: кирилиця в шляхах не потрапляє в запит
+        shutil.copy(src, os.path.join(work, name))
+        names.append(name)
+    msgs = build_messages(task, context, names)
+    message = "".join(json.dumps({"event": "user", "message": {"content": m}}, ensure_ascii=True) + "\n" for m in msgs)
     started = time.time()
     try:
         proc = subprocess.run(cmd, cwd=work, input=message, capture_output=True, text=True,
@@ -142,6 +160,8 @@ def main() -> int:
     ap.add_argument("--task", required=True, type=Path, help="Файл із текстом завдання (UTF-8)")
     ap.add_argument("--context", type=Path, action="append", default=[],
                     help="Файл досьє (UTF-8), можна кілька; йде перед завданням частинами")
+    ap.add_argument("--attach", type=Path, action="append", default=[],
+                    help="Файл (PDF-скан, зображення), який модель читає сама через read_file; можна кілька")
     ap.add_argument("--schema", required=True, type=Path, help="JSON-схема відповіді")
     ap.add_argument("--out", required=True, type=Path, help="Куди записати JSON-відповідь")
     ap.add_argument("--effort", default="medium", choices=EFFORTS)
@@ -165,7 +185,15 @@ def main() -> int:
 
     try:
         agy = find_agy(args.agy)
-        res = run(task, context, args.schema, args.effort, agy, args.timeout or None)
+        if args.attach and context:
+            raise ValueError("--attach і --context в одному виклику не поєднуються")
+        missing = [str(a) for a in args.attach if not a.exists()]
+        if missing:
+            raise ValueError("Не знайдено файли: " + ", ".join(missing))
+        res = run(task, context, args.schema, args.effort, agy, args.timeout or None, args.attach)
+    except ValueError as exc:
+        print(json.dumps({"error": "input", "message": str(exc)}, ensure_ascii=False))
+        return 2
     except FileNotFoundError as exc:
         print(json.dumps({"error": "agy_missing", "message": str(exc)}, ensure_ascii=False))
         return 3
@@ -174,7 +202,7 @@ def main() -> int:
         return 5
 
     summary = {k: v for k, v in res.items() if k != "structured"}
-    summary.update({"role": args.role, "task_chars": len(task), "context_chars": len(context), "out": str(args.out),
+    summary.update({"role": args.role, "task_chars": len(task), "context_chars": len(context), "attachments": [a.name for a in args.attach], "out": str(args.out),
                     "at": datetime.datetime.now().isoformat(timespec="seconds")})
     if args.log:
         args.log.parent.mkdir(parents=True, exist_ok=True)
