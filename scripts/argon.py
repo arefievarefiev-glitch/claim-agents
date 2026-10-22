@@ -222,4 +222,7 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+    for _stream in (sys.stdout, sys.stderr):
+        if hasattr(_stream, "reconfigure"):
+            _stream.reconfigure(encoding="utf-8")  # Windows: вивід у файл інакше йде в кодуванні системи
     sys.exit(main())

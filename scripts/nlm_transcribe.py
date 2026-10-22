@@ -64,8 +64,33 @@ def query(notebook: str, source_id: str, question: str) -> str:
     return json.loads(proc.stdout).get("answer", "")
 
 
+OFFER_RE = re.compile(
+    r"^[ \t]*[\U0001F300-\U0001FAFF☀-➿⭐]"     # рядок, що починається з емодзі
+    r"|^[^\n]*Бажаєте,?\s+щоб\s+я",                          # «Бажаєте, щоб я підготував…»
+    re.M)
+RULE_BEFORE_RE = re.compile(r"\n[ \t]*-{3,}[ \t]*\n\s*$")    # лінія «---» безпосередньо перед пропозицією
+
+
+def clean(answer: str) -> str:
+    """Прибирає з відповіді чату те, чого немає в документі.
+
+    NotebookLM дописує наприкінці пропозицію чат-бота («Бажаєте, щоб я підготував…?»),
+    вставляє маркери цитат [N] і markdown-виділення **. У тексті джерела їх бути не має.
+    """
+    last = None
+    for last in PAGE_RE.finditer(answer):
+        pass
+    if last:
+        m = OFFER_RE.search(answer, last.end())
+        if m:
+            answer = answer[:m.start()]
+            answer = RULE_BEFORE_RE.sub("\n", answer)
+    answer = CIT_RE.sub("", answer).replace("**", "")
+    return re.sub(r"[ \t]+\n", "\n", answer).strip()
+
+
 def split_pages(text: str) -> dict[int, str]:
-    parts = PAGE_RE.split(text)
+    parts = PAGE_RE.split(clean(text))
     return {int(parts[i]): parts[i + 1].strip() for i in range(1, len(parts) - 1, 2)}
 
 
@@ -130,6 +155,8 @@ def main() -> int:
                     diffs.append({"page": p, **d})
             text = "\n\n".join(f"=== Сторінка {p} ===\n{run1[p]}" for p in sorted(run1))
             Path(src["path"]).write_text(text, encoding="utf-8")
+            alt = "\n\n".join(f"=== Сторінка {p} ===\n{run2[p]}" for p in sorted(run2))
+            (args.texts / f"{src['id']}.run2.txt").write_text(alt, encoding="utf-8")  # для звірки на G1
             (args.texts / f"{src['id']}.diff.json").write_text(
                 json.dumps(diffs, ensure_ascii=False, indent=2), encoding="utf-8")
             missing = [p for p in range(1, n + 1) if p not in run1]
@@ -153,4 +180,7 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+    for _stream in (sys.stdout, sys.stderr):
+        if hasattr(_stream, "reconfigure"):
+            _stream.reconfigure(encoding="utf-8")  # Windows: вивід у файл інакше йде в кодуванні системи
     sys.exit(main())
