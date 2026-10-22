@@ -12,11 +12,19 @@
     кодування консолі Windows кирилицю не псує;
   * --json-schema обов'язковий: без нього agy-агент схильний до «дослідження» робочої теки;
   * виклик іде в порожній тимчасовій теці, а преамбула забороняє інструменти;
-    якщо модель усе ж викликала інструмент, це фіксується в підсумку (tools_used).
+    якщо модель усе ж викликала інструмент, це фіксується в підсумку (tools_used);
+  * повідомлення понад ~150 тис. символів agy виносить у файл, і модель читає його
+    частинами з пропусками (тест: 2 з 3 фактів при 228 тис., 0 з 3 при 304 тис.).
+    Тому досьє (--context) ділиться на частини до CHUNK_CHARS по межах абзаців і йде
+    послідовними повідомленнями однієї розмови, а завдання — останнім повідомленням
+    (тест: 6 з 6 фактів у 360 тис. символів).
 
 Використання:
     python argon.py --task task.md --schema schema.json --out result.json \\
-        [--effort low|medium|high] [--log events.jsonl] [--role extract]
+        [--context dossier.md ...] [--effort low|medium|high] [--log events.jsonl] [--role extract]
+
+Порядок контекстних файлів зберігайте однаковим між викликами: неявне кешування
+спрацьовує на однаковому префіксі розмови.
 
 Коди виходу: 0 — успіх; 2 — помилка вхідних даних; 3 — agy не знайдено або вхід
 протерміновано; 4 — модель не повернула структурованої відповіді; 5 — тайм-аут.
@@ -42,6 +50,9 @@ PREAMBLE = (
     "Write all natural-language fields in Ukrainian unless the task says otherwise.\n\n"
 )
 EFFORTS = ("low", "medium", "high")
+CHUNK_CHARS = 120_000
+PART_NOTE = ("DOSSIER PART {i} of {n}. Read and retain it in full; the task comes in the last message. "
+             "Reply only with the word OK.\n\n")
 AUTH_HINTS = ("sign in", "login", "log in", "authenticat", "unauthor", "credential")
 
 
@@ -54,11 +65,40 @@ def find_agy(explicit: str | None) -> str:
     raise FileNotFoundError("Не знайдено agy. Встановіть Antigravity CLI з власного вікна PowerShell.")
 
 
-def run(task: str, schema_path: Path, effort: str, agy: str, timeout: int | None) -> dict:
+def split_chunks(text: str, limit: int = CHUNK_CHARS) -> list[str]:
+    """Ділить текст на частини до limit символів по межах абзаців (рядків)."""
+    chunks, cur, size = [], [], 0
+    for para in text.splitlines(keepends=True):
+        while len(para) > limit:  # надто довгий абзац ріжеться по пробілу
+            cut = para.rfind(" ", 0, limit)
+            if cut <= 0:
+                cut = limit
+            if cur:
+                chunks.append("".join(cur)); cur, size = [], 0
+            chunks.append(para[:cut]); para = para[cut:]
+        if size + len(para) > limit and cur:
+            chunks.append("".join(cur)); cur, size = [], 0
+        cur.append(para); size += len(para)
+    if cur:
+        chunks.append("".join(cur))
+    return [c for c in chunks if c.strip()]
+
+
+def build_messages(task: str, context: str) -> list[str]:
+    if not context.strip():
+        return [PREAMBLE + task]
+    parts = split_chunks(context)
+    msgs = [PREAMBLE + PART_NOTE.format(i=i, n=len(parts)) + c for i, c in enumerate(parts, 1)]
+    msgs.append(PREAMBLE + "The dossier is complete. Using ALL dossier parts above, perform the task.\n\n" + task)
+    return msgs
+
+
+def run(task: str, context: str, schema_path: Path, effort: str, agy: str, timeout: int | None) -> dict:
     model = f"gemini-4-argon-{effort}"
     cmd = [agy, "--model", model, "--input-format", "stream-json", "--output-format", "stream-json",
            "--disable-slash-commands", "--json-schema", str(schema_path.resolve())]
-    message = json.dumps({"event": "user", "message": {"content": PREAMBLE + task}}, ensure_ascii=True) + "\n"
+    msgs = build_messages(task, context)
+    message = "".join(json.dumps({"event": "user", "message": {"content": m}}, ensure_ascii=True) + "\n" for m in msgs)
     work = tempfile.mkdtemp(prefix="argon_")
     started = time.time()
     try:
@@ -67,7 +107,7 @@ def run(task: str, schema_path: Path, effort: str, agy: str, timeout: int | None
     finally:
         shutil.rmtree(work, ignore_errors=True)
 
-    tools, result = [], {}
+    tools, result, turns = [], {}, []
     for line in proc.stdout.splitlines():
         if not line.startswith("{"):
             continue
@@ -81,6 +121,7 @@ def run(task: str, schema_path: Path, effort: str, agy: str, timeout: int | None
                 tools.append(st.get("tool_name"))
         elif ev.get("event") == "result":
             result = ev["result"]
+            turns.append(result.get("usage") or {})
     return {
         "model": model,
         "seconds": round(time.time() - started, 1),
@@ -89,6 +130,8 @@ def run(task: str, schema_path: Path, effort: str, agy: str, timeout: int | None
         "structured": result.get("structured_output"),
         "error": result.get("error") or proc.stderr.strip()[:1000],
         "usage": result.get("usage"),
+        "messages": len(msgs),
+        "input_tokens_all_turns": sum(u.get("input_tokens", 0) for u in turns),
         "conversation_id": result.get("conversation_id"),
         "tools_used": tools,
     }
@@ -97,6 +140,8 @@ def run(task: str, schema_path: Path, effort: str, agy: str, timeout: int | None
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--task", required=True, type=Path, help="Файл із текстом завдання (UTF-8)")
+    ap.add_argument("--context", type=Path, action="append", default=[],
+                    help="Файл досьє (UTF-8), можна кілька; йде перед завданням частинами")
     ap.add_argument("--schema", required=True, type=Path, help="JSON-схема відповіді")
     ap.add_argument("--out", required=True, type=Path, help="Куди записати JSON-відповідь")
     ap.add_argument("--effort", default="medium", choices=EFFORTS)
@@ -108,6 +153,7 @@ def main() -> int:
 
     try:
         task = args.task.read_text(encoding="utf-8-sig")
+        context = "\n\n".join(c.read_text(encoding="utf-8-sig") for c in args.context)
         json.loads(args.schema.read_text(encoding="utf-8-sig"))
     except Exception as exc:  # noqa: BLE001
         print(json.dumps({"error": "input", "message": str(exc)}, ensure_ascii=False))
@@ -119,7 +165,7 @@ def main() -> int:
 
     try:
         agy = find_agy(args.agy)
-        res = run(task, args.schema, args.effort, agy, args.timeout or None)
+        res = run(task, context, args.schema, args.effort, agy, args.timeout or None)
     except FileNotFoundError as exc:
         print(json.dumps({"error": "agy_missing", "message": str(exc)}, ensure_ascii=False))
         return 3
@@ -128,7 +174,7 @@ def main() -> int:
         return 5
 
     summary = {k: v for k, v in res.items() if k != "structured"}
-    summary.update({"role": args.role, "task_chars": len(task), "out": str(args.out),
+    summary.update({"role": args.role, "task_chars": len(task), "context_chars": len(context), "out": str(args.out),
                     "at": datetime.datetime.now().isoformat(timespec="seconds")})
     if args.log:
         args.log.parent.mkdir(parents=True, exist_ok=True)
